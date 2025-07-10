@@ -24,8 +24,8 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     actor_rollout_ref.model.path=Qwen/Qwen2.5-Coder-3B \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
-    actor_rollout_ref.actor.ppo_mini_batch_size=128 \
-    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=16 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=4 \
+    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4 \
     actor_rollout_ref.actor.use_kl_loss=False \
     actor_rollout_ref.actor.kl_loss_coef=0.0 \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
@@ -34,8 +34,8 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     actor_rollout_ref.model.pretrained_tokenizer=True \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
-    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=64 \
-    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=64 \
+    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=4 \
+    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=4 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.max_num_batched_tokens=16384 \
@@ -50,7 +50,7 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     trainer.logger=['console','wandb'] \
     trainer.project_name='azr' \
     trainer.experiment_name='azr_coder3b' \
-    trainer.n_gpus_per_node=2 \
+    trainer.n_gpus_per_node=4 \
     trainer.nnodes=1 \
     trainer.save_freq=3 \
     trainer.remove_previous_ckpt_in_save=True \

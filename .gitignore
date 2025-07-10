@@ -104,6 +104,7 @@ error*.json
 
 slurm_outputs/*
 *.out
+*.err
 code_generation_lite/*
 v*_*/*
 data/dapo*/*
