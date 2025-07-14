@@ -46,6 +46,7 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     actor_rollout_ref.rollout.temperature=1.0 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.kl_ctrl.kl_coef=0.0 \
+    ray_init.num_cpus=8 \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='azr' \

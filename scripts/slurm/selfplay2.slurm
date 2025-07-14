@@ -9,6 +9,9 @@
 #SBATCH --error=./logs/%x_%j.err		# Error file
 
 #SBATCH --gres=gpu:a100:4
+#SBATCH --nodes=1                # Request one node
+#SBATCH --ntasks=1               # Run a single task
+#SBATCH --cpus-per-task=16        # Request CPUs for the task
 #SBATCH --mem=64G
 
 #SBATCH --time=1-00:00:00		# Time limit
