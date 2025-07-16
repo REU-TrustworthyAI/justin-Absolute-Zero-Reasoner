@@ -13,6 +13,7 @@ import ast
 
 import ray
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from omegaconf import OmegaConf
 import numpy as np
@@ -608,6 +609,8 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
         self.dataset_manager = DatasetManager.remote()
         self._last_cleanup_step = 0
         self._cleanup_frequency = self.config.azr.get('executor_cleanup_frequency', 5)
+        self.initial_actor_state_dict = None
+        self.gradient_update_threshold = self.config.azr.get('gradient_update_threshold', 1e-5)
 
     def cleanup(self):
         """Clean up the executor and other resources"""
@@ -1467,6 +1470,10 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
         # load checkpoint before doing anything
         self._load_checkpoint()
 
+        # After loading a checkpoint or initializing models, capture the
+        # state as the baseline for the first tracking interval.
+        self._capture_initial_model_states()
+
         # base model chat template
         if self.config.actor_rollout_ref.model.pretrained_tokenizer:
             self.tokenizer.chat_template = "{%- for message in messages -%}{{- '\n' if not loop.first -}}{{- message['content'] -}}{%- endfor -%}"
@@ -1896,7 +1903,6 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
     def _validate(self):
         """
         The validation loop of PPO.
-        The only difference is logging more metrics.
         """
         reward_tensor_lst = []
         data_source_lst = []
@@ -1905,16 +1911,16 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
         sample_inputs = []
         sample_outputs = []
         sample_scores = []
+        # Add a list to store entropy sequences
+        sample_entropies = [] 
         all_eval_metrics = defaultdict(list)
 
         for test_data in self.val_dataloader:
             test_batch = DataProto.from_single_dict(test_data)
 
-            # we only do validation on rule-based rm
             if self.config.reward_model.enable and test_batch[0].non_tensor_batch['reward_model']['style'] == 'model':
                 return {}
 
-            # Store original inputs
             input_ids = test_batch.batch['input_ids']
             input_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in input_ids]
             sample_inputs.extend(input_texts)
@@ -1926,23 +1932,28 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
                 'recompute_log_prob': False,
                 'do_sample': False,
                 'validate': True,
+                # Signal to generator for logits
+                'output_scores': True,
             }
-
-            # pad to be divisible by dp_size
+            
             test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_wg.world_size)
             test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
-            # unpad
             test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
             PrettyPrinter.status("VALID", "Generation completed", "success")
 
-            # Store generated outputs
+            # Calculate and store entropy from logits
+            if 'logits' in test_output_gen_batch.batch:
+                logits = test_output_gen_batch.batch['logits']
+                entropies = self._calculate_token_entropy(logits)
+                # Add each entropy sequence from the batch to our list
+                sample_entropies.extend([e for e in entropies])
+            
             output_ids = test_output_gen_batch.batch['responses']
             output_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in output_ids]
             sample_outputs.extend(output_texts)
 
             test_batch = test_batch.union(test_output_gen_batch)
-
-            # evaluate using reward_function
+            
             reward_tensor, eval_metrics, _, _ = self.val_reward_fn(
                 test_batch,
                 problem_type=None,
@@ -1951,7 +1962,6 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
             for k, v in eval_metrics.items():
                 all_eval_metrics[k].append(v)
 
-            # Store scores
             scores = reward_tensor.sum(-1).cpu().tolist()
             sample_scores.extend(scores)
 
@@ -1960,16 +1970,16 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
 
         self._maybe_log_val_generations(inputs=sample_inputs, outputs=sample_outputs, scores=sample_scores)
 
-        reward_tensor = torch.cat(reward_tensor_lst, dim=0).sum(-1).cpu()  # (batch_size,)
-        data_sources = np.concatenate(data_source_lst, axis=0)
+        if sample_entropies:
+            self._log_entropy_histogram(
+                inputs=sample_inputs,
+                outputs=sample_outputs,
+                entropies=sample_entropies,
+                step=self.global_steps
+            )
 
-        # evaluate test_score based on data source
-        data_source_reward = {}
-        for i in range(reward_tensor.shape[0]):
-            data_source = data_sources[i]
-            if data_source not in data_source_reward:
-                data_source_reward[data_source] = []
-            data_source_reward[data_source].append(reward_tensor[i].item())
+        reward_tensor = torch.cat(reward_tensor_lst, dim=0).sum(-1).cpu()
+        data_sources = np.concatenate(data_source_lst, axis=0)
 
         metric_dict = {}
         for data_source, rewards in data_source_reward.items():
@@ -2031,10 +2041,18 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
         self.loaded_datasets = True
 
     def _save_checkpoint(self):
+        # Track sparsity against the state from the last checkpoint and log it
+        sparsity_metrics = self._track_and_log_gradient_sparsity()
+        if hasattr(self, 'logger') and sparsity_metrics:
+            # Assuming self.logger is the ReasonRLTracking instance from fit()
+            logger = self.logger
+            logger.log(data=sparsity_metrics, step=self.global_steps)
         super()._save_checkpoint()
         # save datasets
         self._save_datasets(Path(self.config.trainer.default_local_dir) / 'datasets')
         PrettyPrinter.status("SAVE", f"Saved checkpoint to {self.config.trainer.default_local_dir}", "success")
+        # After saving, capture the new state as the baseline for the next interval.
+        self._capture_initial_model_states()
 
     def _load_checkpoint(self):
         super()._load_checkpoint()
@@ -2095,3 +2113,100 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
                     current_prob = self.config.azr.data_selection_strategy.composite_chance
                     self.config.azr.data_selection_strategy.composite_chance = new_prob
                     PrettyPrinter.status("Scheduler", f"Updated composite probability from {current_prob:.2f} to {new_prob:.2f}", "info")
+
+    def _capture_initial_model_states(self):
+        """Captures the current state of actor and critic models for later comparison."""
+        PrettyPrinter.status("SPARSITY", "Capturing initial model states for gradient tracking.", "info")
+
+        def get_model_state_dict(worker):
+            """This function is sent to and executed on the remote worker."""
+            return worker.model.state_dict()
+
+        actor_state_results = self.actor_rollout_wg.execute_on_workers(
+            get_model_state_dict,
+            worker_indices=[0] 
+        )
+        actor_states = actor_state_results[0]
+        self.initial_actor_state_dict = {k: v.cpu().clone() for k, v in actor_states.items()}
+
+    def _track_and_log_gradient_sparsity(self):
+        """
+        Compares current model weights to the initially captured ones, logs the sparsity
+        and near-zero counts, and returns the metrics.
+        """
+        PrettyPrinter.section_header("Tracking Gradient Update Sparsity & Near-Zero Parameters")
+        metrics = {}
+
+        def get_model_state_dict(worker):
+            """This function is sent to and executed on the remote worker."""
+            return worker.model.state_dict()
+
+        # --- Actor Sparsity ---
+        if self.initial_actor_state_dict:
+            current_actor_results = self.actor_rollout_wg.execute_on_workers(
+                get_model_state_dict,
+                worker_indices=[0]
+            )
+            current_actor_states = current_actor_results[0]
+            
+            untouched_actor_params = 0
+            close_to_zero_actor_params = 0
+            total_actor_params = 0
+
+            for key in self.initial_actor_state_dict:
+                initial_param = self.initial_actor_state_dict[key]
+                current_param = current_actor_states[key].cpu()
+                param_size = initial_param.numel()
+                total_actor_params += param_size
+
+                if torch.allclose(initial_param, current_param, atol=self.gradient_update_threshold, rtol=0):
+                    untouched_actor_params += param_size
+                
+                close_to_zero_actor_params += torch.sum(torch.abs(current_param) <= self.gradient_update_threshold).item()
+        
+            if total_actor_params > 0:
+                untouched_ratio = untouched_actor_params / total_actor_params
+                metrics['sparsity/actor_untouched_params'] = untouched_actor_params
+                metrics['sparsity/actor_total_params'] = total_actor_params
+                metrics['sparsity/actor_untouched_ratio'] = untouched_ratio
+                PrettyPrinter.status("SPARSITY", f"Actor untouched parameter ratio: {untouched_ratio:.4%}", "info")
+
+                near_zero_ratio = close_to_zero_actor_params / total_actor_params
+                metrics['sparsity/actor_near_zero_params'] = close_to_zero_actor_params
+                metrics['sparsity/actor_near_zero_ratio'] = near_zero_ratio
+                PrettyPrinter.status("SPARSITY", f"Actor near-zero parameter ratio: {near_zero_ratio:.4%}", "info")
+
+        return metrics
+
+    def _calculate_token_entropy(self, logits: torch.Tensor) -> torch.Tensor:
+        """Calculates the entropy for each token distribution in a sequence of logits."""
+        # Using log_softmax for numerical stability is crucial
+        log_probs = F.log_softmax(logits, dim=-1)
+        probs = torch.exp(log_probs)
+        
+        # Entropy formula: H(p) = -sum(p * log(p))
+        token_entropy = -torch.sum(probs * log_probs, dim=-1)
+        return token_entropy
+        
+    def _log_entropy_histogram(self, inputs: List[str], outputs: List[str], entropies: List[torch.Tensor], step: int):
+        """Logs token-level entropy as a histogram and table to WandB."""
+
+        # Flatten all entropy values from the batch into a single list
+        all_entropy_values = []
+        for entropy_seq in entropies:
+            all_entropy_values.extend(entropy_seq.cpu().numpy().tolist())
+
+        if not all_entropy_values:
+            return # Don't log if there's no data
+
+        # Log the collected entropies as a histogram
+        wandb.log({
+            "validation/token_entropy_distribution": wandb.Histogram(all_entropy_values),
+            "global_step": step
+        })
+
+        # Log a few raw text examples for context, as before
+        text_table = wandb.Table(columns=["input_text", "generated_output"])
+        for i in range(min(len(inputs), 4)): # Log up to 4 examples
+            text_table.add_data(inputs[i], outputs[i])
+        wandb.log({"validation/entropy_samples": text_table, "global_step": step})

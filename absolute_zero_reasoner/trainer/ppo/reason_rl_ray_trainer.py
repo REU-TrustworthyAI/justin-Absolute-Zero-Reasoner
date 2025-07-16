@@ -233,6 +233,7 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
         Create the train and val dataloader.
         """
         from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
+        from torchdata.stateful_dataloader import StatefulDataLoader
         self.train_dataset = RLHFDataset(parquet_files=self.config.data.train_files,
                                          tokenizer=self.tokenizer,
                                          prompt_key=self.config.data.prompt_key,
@@ -249,7 +250,7 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
         else:
             sampler = SequentialSampler(data_source=self.train_dataset)
 
-        self.train_dataloader = DataLoader(dataset=self.train_dataset,
+        self.train_dataloader = StatefulDataLoader(dataset=self.train_dataset,
                                            batch_size=self.config.data.train_batch_size,
                                            drop_last=True,
                                            collate_fn=collate_fn,
@@ -263,7 +264,7 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
                                        return_raw_chat=self.config.data.get('return_raw_chat', False),
                                        truncation='error',
                                        extra_source_key="val")
-        self.val_dataloader = DataLoader(dataset=self.val_dataset,
+        self.val_dataloader = StatefulDataLoader(dataset=self.val_dataset,
                                          batch_size=len(self.val_dataset),
                                          shuffle=True,
                                          drop_last=True,
