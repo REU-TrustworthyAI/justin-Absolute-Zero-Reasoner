@@ -13,10 +13,10 @@ import ast
 
 import ray
 import torch
-import torch.nn.functional as F
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from omegaconf import OmegaConf
 import numpy as np
+import wandb
 from verl.utils.dataset.rl_dataset import collate_fn
 from verl.utils.debug import marked_timer
 from verl.trainer.ppo.ray_trainer import (
@@ -50,6 +50,17 @@ def create_default_dict():
 
 
 def compute_data_metrics(batch, use_critic=True, tokenizer=None):
+    """
+    Computes various metrics from a batch of data.
+
+    Args:
+        batch (DataProto): The batch of data.
+        use_critic (bool): Whether to compute critic-related metrics.
+        tokenizer: The tokenizer for decoding.
+
+    Returns:
+        dict: A dictionary of computed metrics.
+    """
     sequence_score = batch.batch['token_level_scores'].sum(-1)
     sequence_reward = batch.batch['token_level_rewards'].sum(-1)
 
@@ -174,6 +185,13 @@ def compute_data_metrics(batch, use_critic=True, tokenizer=None):
         'prompt_length/clip_ratio':
             torch.mean(torch.eq(prompt_length, max_prompt_length).float()).detach().item(),
     }
+
+    # Add token-level entropy distribution if available
+    if 'entropys' in batch.batch:
+        valid_entropys = torch.masked_select(batch.batch['entropys'], response_mask)
+        if valid_entropys.numel() > 0:
+            # Explicitly create a wandb.Histogram object to ensure it's logged as media.
+            metrics['actor/token_entropy/distribution'] = wandb.Histogram(valid_entropys.detach().cpu().numpy())
     return metrics
 
 
@@ -237,6 +255,7 @@ def determine_type(element):
 
 
 def is_pickleable(obj):
+    """Checks if an object can be pickled."""
     try:
         pickle.dumps(obj)
         return True
@@ -246,10 +265,11 @@ def is_pickleable(obj):
 
 @ray.remote
 class DatasetManager:
+    """A Ray actor to manage datasets in a thread-safe manner."""
     def __init__(self):
         self.datasets = {
-            'input': [],        # Stores only data entries
-            'output': [],       # Stores only data entries 
+            'input': [],      # Stores only data entries
+            'output': [],     # Stores only data entries 
             'seed': [],
             'error': [],
             'problem': [],
@@ -289,6 +309,7 @@ class DatasetManager:
         }
 
     def update_seed(self, entries):
+        """Updates the seed dataset with new, unique entries."""
         with self.locks['seed']:
             existing = {json.dumps(d, sort_keys=True): True for d in self.datasets['seed']}
             new_entries = [e for e in entries if json.dumps(e, sort_keys=True) not in existing]
@@ -303,6 +324,7 @@ class DatasetManager:
             return len(new_entries)
 
     def update_error_seed(self, entries):
+        """Updates the error_seed dataset with new, unique entries."""
         with self.locks['error_seed'], self.locks['error_types']:
             existing = {json.dumps(d, sort_keys=True): True for d in self.datasets['error_seed']}
             new_entries = [e for e in entries if json.dumps(e, sort_keys=True) not in existing]
@@ -339,6 +361,7 @@ class DatasetManager:
         }
 
     def add_input_batch(self, entries: List[Dict], global_step: int):
+        """Adds a batch of entries to the input dataset."""
         with self.locks['input'], self.locks['input_steps'], self.locks['input_types']:
             for entry in entries:
                 if 'input' in entry and '_input_type' in entry:
@@ -350,6 +373,7 @@ class DatasetManager:
             return len(self.datasets['input'])
 
     def add_output_batch(self, entries: List[Dict], global_step: int):
+        """Adds a batch of entries to the output dataset."""
         with self.locks['output'], self.locks['output_steps'], self.locks['output_types']:
             for entry in entries:
                 if 'output' in entry and '_output_type' in entry:
@@ -361,6 +385,7 @@ class DatasetManager:
             return len(self.datasets['output'])
 
     def add_error_batch(self, entries: List[Dict], global_step: int):
+        """Adds a batch of entries to the error dataset."""
         with self.locks['error'], self.locks['error_steps'], self.locks['error_types'], self.locks['error_types']:
             for entry in entries:
                 if 'output' in entry and '_output_type' in entry:
@@ -372,6 +397,7 @@ class DatasetManager:
             return len(self.datasets['error'])
 
     def add_error_seed_batch(self, entries: List[Dict], global_step: int):
+        """Adds a batch of entries to the error_seed dataset."""
         with self.locks['error_seed'], self.locks['error_steps']:
             for entry in entries:
                 if 'output' in entry and '_output_type' in entry:
@@ -383,6 +409,7 @@ class DatasetManager:
             return len(self.datasets['error_seed'])
 
     def add_problem_batch(self, entries: List[Dict], global_step: int):
+        """Adds a batch of entries to the problem dataset."""
         with self.locks['problem'], self.locks['problem_steps'], self.locks['problem_steps_counter']:
             for entry in entries:
                 if 'inputs' in entry and '_input_types' in entry:
@@ -398,6 +425,7 @@ class DatasetManager:
             return len(entries)
 
     def get_snippets(self) -> List[Dict]:
+        """Gets snippets from input, output, and seed datasets."""
         # get the snippets from input and output datasets merged together
         snippets = []
         if self.datasets['input'] or self.datasets['output']:
@@ -412,10 +440,12 @@ class DatasetManager:
             return list(snippets)
 
     def get_snippets_with_steps(self) -> List[Tuple[Dict, int]]:
+        """Gets snippets along with their creation steps."""
         snippets = self.get_snippets()
         return list(zip(snippets, self.datasets['input_steps'] + self.datasets['output_steps']))
 
     def get_recent_additions(self, dataset_key: str, current_step: int, window: int) -> int:
+        """Counts additions to a dataset within a recent step window."""
         counter_key = f"{dataset_key}_steps_counter"
         with self.locks[counter_key]:
             # Get steps from the counter dictionary instead of list
@@ -430,6 +460,7 @@ class DatasetManager:
             return total_recent
 
     def get_dataset_with_steps(self, name) -> List[Tuple[Dict, int]]:
+        """Gets a dataset along with its creation steps."""
         if name == 'input':
             assert len(self.datasets['input']) == len(self.datasets['input_steps']), \
                 "Input data/steps mismatch!"
@@ -449,6 +480,7 @@ class DatasetManager:
         raise ValueError(f"Invalid dataset name: {name}")
 
     def get_steps_dataset(self, name) -> List[int]:
+        """Gets the list of creation steps for a dataset."""
         if name == 'input':
             return self.datasets['input_steps']
         elif name == 'output':
@@ -460,6 +492,7 @@ class DatasetManager:
         raise ValueError(f"Invalid dataset name: {name}")
 
     def truncate_datasets(self, max_length: int, name: str) -> Tuple[int, int]:
+        """Truncates a dataset to a maximum length."""
         if name == 'input':
             with self.locks['input'], self.locks['input_steps']:
                 before_length = len(self.datasets['input'])
@@ -502,6 +535,7 @@ class DatasetManager:
             raise ValueError(f"Invalid dataset name: {name}")
 
     def get_dataset_size(self, name: str) -> int:
+        """Returns the size of a specific dataset."""
         with self.locks[name]:
             return len(self.datasets[name])
 
@@ -573,17 +607,23 @@ class DatasetManager:
         return all_data
 
     def get_type_counter(self, counter_key):
+        """Gets a specific type counter."""
         counter_type = f"{counter_key}_types"
         with self.locks[counter_type]:
             return self.type_counters[counter_type]
 
     def count_element(self, element, element_type, counter_key):
+        """Increments the count for a given element and its type."""
         counter_type = f"{counter_key}_types"
         with self.locks[counter_type]:
             self.type_counters[counter_type][element_type][element] += 1
 
 
 class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
+    """
+    A PPO trainer for code generation tasks (input, output, error, function).
+    This trainer manages code execution, dataset creation, and the PPO training loop.
+    """
     _supported_tasks = {'code_i', 'code_o', 'code_e', 'code_f'}
     def __init__(self, past_epoch_window: int = 10, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -609,8 +649,6 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
         self.dataset_manager = DatasetManager.remote()
         self._last_cleanup_step = 0
         self._cleanup_frequency = self.config.azr.get('executor_cleanup_frequency', 5)
-        self.initial_actor_state_dict = None
-        self.gradient_update_threshold = self.config.azr.get('gradient_update_threshold', 1e-5)
 
     def cleanup(self):
         """Clean up the executor and other resources"""
@@ -627,6 +665,7 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
         dataset_key: str = None,
         seeding: bool = False,
     ) -> DataLoader:
+        """Creates a DataLoader for code generation training."""
         if dataset_key is None:
             if problem_type == 'code_i':
                 dataset_key = 'input'
@@ -720,6 +759,7 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
         ))
 
     def _create_train_code_pred_dataloader(self, problem_type: str, data_len: int) -> DataLoader:
+        """Creates a DataLoader for code prediction training."""
         if problem_type == 'code_i':
             dataset_key = 'input'
         elif problem_type == 'code_o':
@@ -781,13 +821,13 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
             instruction_type=self.config.reward_fn.extraction_type,
         )
         code_pred_train_dataset = RLHFDataset(parquet_files=parquet_path,
-                                         tokenizer=self.tokenizer,
-                                         prompt_key=self.config.data.prompt_key,
-                                         max_prompt_length=self.config.data.max_prompt_length,
-                                         filter_prompts=True,
-                                         return_raw_chat=self.config.data.get('return_raw_chat', False),
-                                         truncation='error',
-                                         extra_source_key=f"pred_{problem_type}_train")
+                                              tokenizer=self.tokenizer,
+                                              prompt_key=self.config.data.prompt_key,
+                                              max_prompt_length=self.config.data.max_prompt_length,
+                                              filter_prompts=True,
+                                              return_raw_chat=self.config.data.get('return_raw_chat', False),
+                                              truncation='error',
+                                              extra_source_key=f"pred_{problem_type}_train")
         # use sampler for better ckpt resume
         if self.config.data.shuffle:
             train_dataloader_generator = torch.Generator()
@@ -797,15 +837,16 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
             sampler = SequentialSampler(data_source=code_pred_train_dataset)
 
         code_pred_train_dataloader = DataLoader(dataset=code_pred_train_dataset,
-                                           batch_size=self.config.data.train_batch_size,
-                                           drop_last=True,
-                                           collate_fn=collate_fn,
-                                           sampler=sampler)
+                                              batch_size=self.config.data.train_batch_size,
+                                              drop_last=True,
+                                              collate_fn=collate_fn,
+                                              sampler=sampler)
 
         assert len(code_pred_train_dataloader) >= 1
         return iter(code_pred_train_dataloader)
 
     def _compute_batch(self, batch: DataProto, metrics: dict, timing_raw: dict, problem_type: str, executor: PythonExecutor) -> tuple[DataProto, dict]:
+        """Computes a single batch, including generation, rewards, and advantages."""
         PrettyPrinter.section_header(f"Computing batch for {problem_type}")
         # pop those keys for generation
         gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
@@ -815,7 +856,7 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
             gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
 
         batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],
-                                                dtype=object)
+                                                 dtype=object)
         # repeat to align with repeated responses in rollout
         batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
         batch = batch.union(gen_batch_output)
@@ -841,7 +882,7 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
             entropy_agg = agg_loss(loss_mat=entropys, loss_mask=response_masks, loss_agg_mode=loss_agg_mode)
             old_log_prob_metrics = {"actor/entropy": entropy_agg.detach().item()}
             metrics.update(old_log_prob_metrics)
-            old_log_prob.batch.pop("entropys")
+            # old_log_prob.batch.pop("entropys") # MODIFIED: Keep entropys for token-level logging
             batch = batch.union(old_log_prob)
 
             if "rollout_log_probs" in batch.batch.keys():
@@ -1022,23 +1063,24 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
 
             if self.config.algorithm.use_kl_in_reward:
                 batch, kl_metrics = apply_kl_penalty(batch,
-                                                kl_ctrl=self.kl_ctrl,
-                                                kl_penalty=self.config.algorithm.kl_penalty)
+                                                     kl_ctrl=self.kl_ctrl,
+                                                     kl_penalty=self.config.algorithm.kl_penalty)
                 metrics.update(kl_metrics)
             else:
                 batch.batch['token_level_rewards'] = batch.batch['token_level_scores']
 
             batch = compute_advantage(batch,
-                                    adv_estimator=self.config.algorithm.adv_estimator,
-                                    gamma=self.config.algorithm.gamma,
-                                    lam=self.config.algorithm.lam,
-                                    num_repeat=self.config.actor_rollout_ref.rollout.n,
-                                    config=self.config.algorithm)
+                                      adv_estimator=self.config.algorithm.adv_estimator,
+                                      gamma=self.config.algorithm.gamma,
+                                      lam=self.config.algorithm.lam,
+                                      num_repeat=self.config.actor_rollout_ref.rollout.n,
+                                      config=self.config.algorithm)
 
         gc.collect()
         return batch, metrics
 
     def _init_seed_dataset(self, problem_types: List[str]) -> Tuple[List[Dict], List[Dict], List[Dict]]:
+        """Initializes the seed datasets by loading from file or generating new data."""
         # Initialize with seed program using the coordinator
         if ('code_i' in problem_types or 'code_o' in problem_types) and ray.get(self.dataset_manager.get_dataset.remote('seed')) == []:
             ray.get(self.dataset_manager.update_seed.remote([
@@ -1322,8 +1364,8 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
                 if type_data:  # Only show if we have data
                     PrettyPrinter.status(category_display.upper(), f"Total types: {len(type_data)}", "info")
                     for type_name, stats in sorted(type_data.items(), 
-                                                key=lambda x: x[1]['total_unique'], 
-                                                reverse=True)[:5]:  # Show top 5 by unique count
+                                                   key=lambda x: x[1]['total_unique'], 
+                                                   reverse=True)[:5]:  # Show top 5 by unique count
                         PrettyPrinter.status(
                             f"  {type_name}", 
                             f"Unique: {stats['total_unique']}, Total: {stats['total_count']}", 
@@ -1470,10 +1512,6 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
         # load checkpoint before doing anything
         self._load_checkpoint()
 
-        # After loading a checkpoint or initializing models, capture the
-        # state as the baseline for the first tracking interval.
-        self._capture_initial_model_states()
-
         # base model chat template
         if self.config.actor_rollout_ref.model.pretrained_tokenizer:
             self.tokenizer.chat_template = "{%- for message in messages -%}{{- '\n' if not loop.first -}}{{- message['content'] -}}{%- endfor -%}"
@@ -1514,8 +1552,7 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
                     PrettyPrinter.status("DATA", "Loading seed dataset from file...", "info")
                     with open(self.config.azr.seed_dataset, 'r') as file:
                         seed_dataset = [json.loads(line) for line in file]
-                    seed_dataset = seed_dataset[:self.config.azr.data_selection_strategy.data_len * 
-                                                self.config.azr.data_selection_strategy.seed_batch_factor]
+                    seed_dataset = seed_dataset[:self.config.azr.data_selection_strategy.data_len * self.config.azr.data_selection_strategy.seed_batch_factor]
                     PrettyPrinter.status("DATA", f"Loaded {len(seed_dataset)} seed entries", "success")
                     if 'code_f' in self.config.azr.problem_types: # we need seed to generate code_f
                         ray.get(self.dataset_manager.update_seed.remote(seed_dataset))
@@ -1528,8 +1565,7 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
                     PrettyPrinter.status("DATA", "Loading error seed dataset from file...", "info")
                     with open(self.config.azr.error_seed_dataset, 'r') as file:
                         error_dataset = [json.loads(line) for line in file]
-                    error_dataset = error_dataset[:self.config.azr.data_selection_strategy.data_len * 
-                                                self.config.azr.data_selection_strategy.seed_batch_factor]
+                    error_dataset = error_dataset[:self.config.azr.data_selection_strategy.data_len * self.config.azr.data_selection_strategy.seed_batch_factor]
                     PrettyPrinter.status("DATA", f"Loaded {len(error_dataset)} error entries", "success")
                 else:
                     PrettyPrinter.status("DATA", "Error seed dataset not provided, will generate", "info")
@@ -1539,8 +1575,7 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
                     PrettyPrinter.status("DATA", "Loading code f seed dataset from file...", "info")
                     with open(self.config.azr.code_f_seed_dataset, 'r') as file:
                         code_f_dataset = [json.loads(line) for line in file]
-                    code_f_dataset = code_f_dataset[:self.config.azr.data_selection_strategy.data_len * 
-                                                self.config.azr.data_selection_strategy.seed_batch_factor]
+                    code_f_dataset = code_f_dataset[:self.config.azr.data_selection_strategy.data_len * self.config.azr.data_selection_strategy.seed_batch_factor]
                     PrettyPrinter.status("DATA", f"Loaded {len(code_f_dataset)} code f entries", "success")
 
             # Generate missing datasets if needed
@@ -1755,6 +1790,7 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
                         actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
                         metrics.update(actor_output_metrics)
 
+
                     # validate
                     PrettyPrinter.section_header(f"Starting Validation")
                     if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and \
@@ -1854,8 +1890,8 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
 
                     PrettyPrinter.status(category_display.upper(), f"Total types: {len(type_data)}", "info")
                     for type_name, stats in sorted(type_data.items(), 
-                                                    key=lambda x: x[1]['total_unique'], 
-                                                    reverse=True)[:5]:  # Show top 5 by unique count
+                                                   key=lambda x: x[1]['total_unique'], 
+                                                   reverse=True)[:5]:  # Show top 5 by unique count
                         PrettyPrinter.status(
                             f"  {type_name}", 
                             f"Unique: {stats['total_unique']}, Total: {stats['total_count']}", 
@@ -1903,6 +1939,7 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
     def _validate(self):
         """
         The validation loop of PPO.
+        The only difference is logging more metrics.
         """
         reward_tensor_lst = []
         data_source_lst = []
@@ -1911,16 +1948,16 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
         sample_inputs = []
         sample_outputs = []
         sample_scores = []
-        # Add a list to store entropy sequences
-        sample_entropies = [] 
         all_eval_metrics = defaultdict(list)
 
         for test_data in self.val_dataloader:
             test_batch = DataProto.from_single_dict(test_data)
 
+            # we only do validation on rule-based rm
             if self.config.reward_model.enable and test_batch[0].non_tensor_batch['reward_model']['style'] == 'model':
                 return {}
 
+            # Store original inputs
             input_ids = test_batch.batch['input_ids']
             input_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in input_ids]
             sample_inputs.extend(input_texts)
@@ -1932,28 +1969,23 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
                 'recompute_log_prob': False,
                 'do_sample': False,
                 'validate': True,
-                # Signal to generator for logits
-                'output_scores': True,
             }
-            
+
+            # pad to be divisible by dp_size
             test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_wg.world_size)
             test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
+            # unpad
             test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
             PrettyPrinter.status("VALID", "Generation completed", "success")
 
-            # Calculate and store entropy from logits
-            if 'logits' in test_output_gen_batch.batch:
-                logits = test_output_gen_batch.batch['logits']
-                entropies = self._calculate_token_entropy(logits)
-                # Add each entropy sequence from the batch to our list
-                sample_entropies.extend([e for e in entropies])
-            
+            # Store generated outputs
             output_ids = test_output_gen_batch.batch['responses']
             output_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in output_ids]
             sample_outputs.extend(output_texts)
 
             test_batch = test_batch.union(test_output_gen_batch)
-            
+
+            # evaluate using reward_function
             reward_tensor, eval_metrics, _, _ = self.val_reward_fn(
                 test_batch,
                 problem_type=None,
@@ -1962,6 +1994,7 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
             for k, v in eval_metrics.items():
                 all_eval_metrics[k].append(v)
 
+            # Store scores
             scores = reward_tensor.sum(-1).cpu().tolist()
             sample_scores.extend(scores)
 
@@ -1970,16 +2003,16 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
 
         self._maybe_log_val_generations(inputs=sample_inputs, outputs=sample_outputs, scores=sample_scores)
 
-        if sample_entropies:
-            self._log_entropy_histogram(
-                inputs=sample_inputs,
-                outputs=sample_outputs,
-                entropies=sample_entropies,
-                step=self.global_steps
-            )
-
-        reward_tensor = torch.cat(reward_tensor_lst, dim=0).sum(-1).cpu()
+        reward_tensor = torch.cat(reward_tensor_lst, dim=0).sum(-1).cpu()  # (batch_size,)
         data_sources = np.concatenate(data_source_lst, axis=0)
+
+        # evaluate test_score based on data source
+        data_source_reward = {}
+        for i in range(reward_tensor.shape[0]):
+            data_source = data_sources[i]
+            if data_source not in data_source_reward:
+                data_source_reward[data_source] = []
+            data_source_reward[data_source].append(reward_tensor[i].item())
 
         metric_dict = {}
         for data_source, rewards in data_source_reward.items():
@@ -2033,7 +2066,7 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
                             if step <= self.global_steps:
                                 filtered_counter[step] = count
                         datasets_with_types[counter_key] = filtered_counter
-
+            
             PrettyPrinter.status("FILTER", f"Filtered datasets to only include entries with steps <= {self.global_steps}", "info")
 
         ray.get(self.dataset_manager.full_load_data_with_type_counters.remote(datasets_with_types))
@@ -2041,12 +2074,14 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
         self.loaded_datasets = True
 
     def _save_checkpoint(self):
+        """Saves the model and dataset states."""
         super()._save_checkpoint()
         # save datasets
         self._save_datasets(Path(self.config.trainer.default_local_dir) / 'datasets')
         PrettyPrinter.status("SAVE", f"Saved checkpoint to {self.config.trainer.default_local_dir}", "success")
 
     def _load_checkpoint(self):
+        """Loads the model and dataset states from a checkpoint."""
         super()._load_checkpoint()
         if self.global_steps == 0:
             PrettyPrinter.section_header(f"Training from scratch")
@@ -2074,6 +2109,7 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
             PrettyPrinter.status("Directory", f"Created new code directory at {code_dir}", "info")
 
     def scheduler_step(self):
+        """Updates scheduler parameters based on the current global step."""
         if self.config.azr.data_selection_strategy.composite_scheduler.enabled:
             # Update number of programs - calculate directly based on global steps
             if self.global_steps >= self.config.azr.data_selection_strategy.composite_scheduler.update_num_programs_start:
@@ -2098,7 +2134,7 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
                 # Calculate new value directly from initial value + increments
                 initial_prob = self.config.azr.data_selection_strategy.composite_chance_initial
                 new_prob = min(initial_prob + (num_updates * self.config.azr.data_selection_strategy.composite_scheduler.update_probability_increment),
-                              self.config.azr.data_selection_strategy.composite_scheduler.update_probability_max)
+                               self.config.azr.data_selection_strategy.composite_scheduler.update_probability_max)
 
                 # Only log if value changed
                 if new_prob != self.config.azr.data_selection_strategy.composite_chance:
@@ -2106,35 +2142,3 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
                     self.config.azr.data_selection_strategy.composite_chance = new_prob
                     PrettyPrinter.status("Scheduler", f"Updated composite probability from {current_prob:.2f} to {new_prob:.2f}", "info")
 
-    def _calculate_token_entropy(self, logits: torch.Tensor) -> torch.Tensor:
-        """Calculates the entropy for each token distribution in a sequence of logits."""
-        # Using log_softmax for numerical stability is crucial
-        log_probs = F.log_softmax(logits, dim=-1)
-        probs = torch.exp(log_probs)
-        
-        # Entropy formula: H(p) = -sum(p * log(p))
-        token_entropy = -torch.sum(probs * log_probs, dim=-1)
-        return token_entropy
-        
-    def _log_entropy_histogram(self, inputs: List[str], outputs: List[str], entropies: List[torch.Tensor], step: int):
-        """Logs token-level entropy as a histogram and table to WandB."""
-
-        # Flatten all entropy values from the batch into a single list
-        all_entropy_values = []
-        for entropy_seq in entropies:
-            all_entropy_values.extend(entropy_seq.cpu().numpy().tolist())
-
-        if not all_entropy_values:
-            return # Don't log if there's no data
-
-        # Log the collected entropies as a histogram
-        wandb.log({
-            "validation/token_entropy_distribution": wandb.Histogram(all_entropy_values),
-            "global_step": step
-        })
-
-        # Log a few raw text examples for context, as before
-        text_table = wandb.Table(columns=["input_text", "generated_output"])
-        for i in range(min(len(inputs), 4)): # Log up to 4 examples
-            text_table.add_data(inputs[i], outputs[i])
-        wandb.log({"validation/entropy_samples": text_table, "global_step": step})

@@ -5,8 +5,6 @@ export RAY_memory_monitor_refresh_ms=0
 export RAY_LOGGING_LEVEL=DEBUG
 export HYDRA_FULL_ERROR=1
 export PYTHONPATH="${PYTHONPATH}:$(pwd)/verl"
-export HF_ENDPOINT="https://huggingface.co"
-export HF_HUB_OFFLINE=1
 
 OUTPUT_SEED_PATH=${OUTPUT_SEED_PATH:-data/qwen3_4b_seed_io.jsonl}
 OUTPUT_ERROR_SEED_PATH=${OUTPUT_ERROR_SEED_PATH:-data/qwen3_4b_error_seed_io.jsonl}
@@ -55,8 +53,8 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     trainer.n_gpus_per_node=2 \
     trainer.nnodes=1 \
     trainer.save_freq=10 \
-    trainer.remove_previous_ckpt_in_save=True \
-    trainer.del_local_ckpt_after_load=True \
+    trainer.remove_previous_ckpt_in_save=False \
+    trainer.del_local_ckpt_after_load=False \
     trainer.test_freq=10 \
     +trainer.val_before_train=True \
     reward_fn.extraction_type=answer_conditional \
@@ -110,5 +108,5 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     azr.reward.code_f_reward_type=binary \
     azr.reward.generation_reward_config.reject_multiple_functions=False \
     azr.reward.generation_reward_config.f_replace_location=any_last \
-    trainer.wandb_run_id=null \
+    trainer.wandb_run_id=4t6waj4w \
     trainer.total_epochs=30 $@

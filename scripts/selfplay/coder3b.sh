@@ -53,10 +53,10 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     trainer.experiment_name='azr_coder3b' \
     trainer.n_gpus_per_node=2 \
     trainer.nnodes=1 \
-    trainer.save_freq=3 \
-    trainer.remove_previous_ckpt_in_save=True \
-    trainer.del_local_ckpt_after_load=True \
-    trainer.test_freq=3 \
+    trainer.save_freq=10 \
+    trainer.remove_previous_ckpt_in_save=False \
+    trainer.del_local_ckpt_after_load=False \
+    trainer.test_freq=10 \
     +trainer.val_before_train=False \
     reward_fn.extraction_type=answer_conditional \
     reward_fn.math_metric=math_verify \
@@ -105,5 +105,5 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     azr.data_selection_strategy.composite_function_n_min=0 \
     azr.data_selection_strategy.composite_function_n_max=0 \
     azr.reward.code_f_reward_type=binary \
-    trainer.wandb_run_id=null \
+    trainer.wandb_run_id=5pxtl1s6 \
     trainer.total_epochs=30 $@

@@ -2,7 +2,6 @@
 
 # Default values
 MODEL_PATH="andrewzh/Absolute_Zero_Reasoner-Coder-7b"
-CUDA_GPU_ID="0"
 NUM_GPUS=1
 BATCH_SIZE=128
 N=1
@@ -17,8 +16,8 @@ while [[ $# -gt 0 ]]; do
       MODEL_PATH="$2"
       shift 2
       ;;
-    -g|--gpu)
-      CUDA_GPU_ID="$2"
+    -g|--num_gpus)
+      NUM_GPUS="$2"
       shift 2
       ;;
     -n|--n)
@@ -51,7 +50,7 @@ done
 cd evaluation/code_eval/coding/LiveCodeBench
 
 # Run LiveCodeBench with the AZR template and a local model
-CUDA_VISIBLE_DEVICES=$CUDA_GPU_ID python -m lcb_runner.runner.main \
+python -m lcb_runner.runner.main \
   --model $MODEL_PATH \
   --trust_remote_code \
   --scenario codegeneration \
