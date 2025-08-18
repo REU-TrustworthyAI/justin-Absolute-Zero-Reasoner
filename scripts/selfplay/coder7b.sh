@@ -101,8 +101,9 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     azr.reward.generation_reward_config.remove_after_return=False \
     azr.reward.generation_reward_config.use_original_code_as_ref=True \
     azr.reward.generation_reward_config.remove_print=False \
+    azr.reward.generation_reward_config.generation_accuracy_convertion=difficulty_peak \
     azr.data_selection_strategy.composite_function_n_min=0 \
     azr.data_selection_strategy.composite_function_n_max=0 \
     azr.reward.code_f_reward_type=binary \
-    trainer.wandb_run_id=null \
+    trainer.wandb_run_id=vpbefjn0 \
     trainer.total_epochs=30 $@

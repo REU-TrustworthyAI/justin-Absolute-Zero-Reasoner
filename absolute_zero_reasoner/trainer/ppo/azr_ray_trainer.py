@@ -11,6 +11,7 @@ import os
 import pickle
 import ast
 
+import pandas as pd
 import ray
 import torch
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
@@ -40,6 +41,16 @@ from absolute_zero_reasoner.utils.code_utils.sandboxfusion_executor import Sandb
 from absolute_zero_reasoner.utils.auxiliary import reflection_keywords
 from absolute_zero_reasoner.utils.logging_utils.stdout import PrettyPrinter
 
+class NumpyEncoder(json.JSONEncoder):
+    """ Special json encoder for numpy types """
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return json.JSONEncoder.default(self, obj)
 
 seed_program = """def f(a):
     return a"""
@@ -959,6 +970,27 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
             with marked_timer(f'reward_fn/{problem_type}', timing_raw):
                 PrettyPrinter.status("REWARD", f"Computing rewards for {problem_type}...", "info")
                 reward_tensor, train_metrics, valid_programs, correct_predictions = self.reward_fn(**reward_fn_kwargs)
+
+                #NEW
+                if valid_programs:
+                    try:
+                        # Define the path for your persistent log file
+                        log_path = self._code_dir / 'proposer_generated_questions.jsonl'
+
+                        # Open the log file in append mode
+                        with open(log_path, 'a', encoding='utf-8') as f:
+                            for program_dict in valid_programs:
+                                log_entry = {
+                                    'global_step': self.global_steps,
+                                    'problem_type': problem_type, # e.g., 'gen_code_i'
+                                    'generated_question': program_dict # This is the full problem dictionary
+                                }
+                                # Use the NumpyEncoder to handle any special data types
+                                f.write(json.dumps(log_entry, cls=NumpyEncoder) + '\n')
+                    except Exception as e:
+                        print(f"Error saving proposer-generated question: {e}")
+                #NEW
+
                 PrettyPrinter.status("REWARD", f"Found {len(valid_programs) if valid_programs else 0} valid programs", "success")
 
                 # get avg_program lines
