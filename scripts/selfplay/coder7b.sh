@@ -105,5 +105,5 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     azr.data_selection_strategy.composite_function_n_min=0 \
     azr.data_selection_strategy.composite_function_n_max=0 \
     azr.reward.code_f_reward_type=binary \
-    trainer.wandb_run_id=vpbefjn0 \
+    trainer.wandb_run_id=null \
     trainer.total_epochs=30 $@
