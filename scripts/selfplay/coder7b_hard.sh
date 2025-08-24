@@ -49,7 +49,7 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='azr' \
-    trainer.experiment_name='azr_coder7b' \
+    trainer.experiment_name='azr_coder7b_hard' \
     trainer.n_gpus_per_node=4 \
     trainer.nnodes=1 \
     trainer.save_freq=10 \
@@ -101,9 +101,9 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     azr.reward.generation_reward_config.remove_after_return=False \
     azr.reward.generation_reward_config.use_original_code_as_ref=True \
     azr.reward.generation_reward_config.remove_print=False \
-    azr.reward.generation_reward_config.generation_accuracy_convertion=difficulty_peak \
+    azr.reward.generation_reward_config.generation_accuracy_convertion=hard_peak \
     azr.data_selection_strategy.composite_function_n_min=0 \
     azr.data_selection_strategy.composite_function_n_max=0 \
     azr.reward.code_f_reward_type=binary \
-    trainer.wandb_run_id=vpbefjn0 \
+    trainer.wandb_run_id=jwlkjpol \
     trainer.total_epochs=30 $@

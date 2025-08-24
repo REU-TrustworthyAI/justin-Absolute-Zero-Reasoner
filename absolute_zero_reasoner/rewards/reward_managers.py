@@ -825,9 +825,9 @@ class CodeIORewardManager():
                 rewards[uid]['accuracy'] = 1 - 2 * abs(accuracies[uid] - 0.5)
             elif self.generation_reward_config.generation_accuracy_convertion == 'hard_peak':
                 if accuracies[uid] <= 0.25:
-                    rewards[uid]['accuracy'] = 4 * accuracy
+                    rewards[uid]['accuracy'] = 4 * accuracies[uid]
                 else:
-                    rewards[uid]['accuracy'] = (4/3) * (1 - accuracy)
+                    rewards[uid]['accuracy'] = (4/3) * (1 - accuracies[uid])
             #NEW
             else:
                 raise ValueError(f"Invalid generation accuracy convertion: {self.generation_reward_config.generation_accuracy_convertion}")
