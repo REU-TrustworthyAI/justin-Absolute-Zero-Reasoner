@@ -21,4 +21,4 @@ conda activate azr
 
 unset ROCR_VISIBLE_DEVICES
 cd /gscratch/scrubbed/jchae3/justin-Absolute-Zero-Reasoner
-bash scripts/selfplay/coder7b_default.sh
+bash scripts/selfplay/coder7b_medium.sh

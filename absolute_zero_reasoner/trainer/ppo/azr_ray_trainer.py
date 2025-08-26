@@ -1167,7 +1167,7 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
                         'pad_token_id': self.tokenizer.pad_token_id,
                         'recompute_log_prob': False,
                         'do_sample': True,
-                        'validate': True,
+                        'validate': False,
                     }
 
                     # pad to be divisible by dp_size
@@ -1307,7 +1307,7 @@ class CodeIORayPPOTrainer(ReasonRLRayPPOTrainer):
                         'pad_token_id': self.tokenizer.pad_token_id,
                         'recompute_log_prob': False,
                         'do_sample': True,
-                        'validate': True,
+                        'validate': False,
                     }
 
                     # pad to be divisible by dp_size

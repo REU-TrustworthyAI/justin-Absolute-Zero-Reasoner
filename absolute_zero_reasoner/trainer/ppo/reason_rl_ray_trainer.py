@@ -7,6 +7,7 @@ from omegaconf import OmegaConf, open_dict
 import torch
 import numpy as np
 from torch.utils.data import Dataset, Sampler
+from torchdata.stateful_dataloader import StatefulDataLoader
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer, apply_kl_penalty, compute_advantage, reduce_metrics, compute_data_metrics, compute_timing_metrics, AdvantageEstimator, compute_response_mask
 from verl.utils.debug import marked_timer
 from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto, DataProto
@@ -232,8 +233,7 @@ class ReasonRLRayPPOTrainer(RayPPOTrainer):
         Changed the prompt length of validation set to have another prompt length.
         Create the train and val dataloader.
         """
-        from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
-        from torchdata.stateful_dataloader import StatefulDataLoader
+        from torch.utils.data import RandomSampler, SequentialSampler
         self.train_dataset = RLHFDataset(parquet_files=self.config.data.train_files,
                                          tokenizer=self.tokenizer,
                                          prompt_key=self.config.data.prompt_key,
