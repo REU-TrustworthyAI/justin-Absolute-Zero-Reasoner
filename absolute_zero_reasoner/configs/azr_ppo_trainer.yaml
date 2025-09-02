@@ -480,7 +480,7 @@ reward_fn:
 
 azr:
   seed: 1
-  executor_max_workers: 1
+  executor_max_workers: 16
   executor_cleanup_frequency: 1
   problem_types:
     - code_i

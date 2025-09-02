@@ -46,7 +46,7 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     actor_rollout_ref.rollout.temperature=1.0 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.kl_ctrl.kl_coef=0.0 \
-    ray_init.num_cpus=8 \
+    ray_init.num_cpus=16 \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='azr' \
@@ -105,5 +105,5 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     azr.data_selection_strategy.composite_function_n_min=0 \
     azr.data_selection_strategy.composite_function_n_max=0 \
     azr.reward.code_f_reward_type=binary \
-    trainer.wandb_run_id=5pxtl1s6 \
+    trainer.wandb_run_id=dfntl8l9 \
     trainer.total_epochs=30 $@

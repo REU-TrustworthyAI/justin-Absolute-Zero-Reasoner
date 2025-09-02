@@ -44,8 +44,9 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     actor_rollout_ref.rollout.free_cache_engine=False \
     actor_rollout_ref.rollout.n=1 \
     actor_rollout_ref.rollout.temperature=1.0 \
-    actor_rollout_ref.ref.fsdp_config.param_offload=True \
+    actor_rollout_ref.ref.fsdp_config.param_offload=False \
     algorithm.kl_ctrl.kl_coef=0.0 \
+    ray_init.num_cpus=16 \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='azr' \
@@ -53,8 +54,8 @@ python -m absolute_zero_reasoner.main_azr_ppo \
     trainer.n_gpus_per_node=4 \
     trainer.nnodes=1 \
     trainer.save_freq=5 \
-    trainer.remove_previous_ckpt_in_save=True \
-    trainer.del_local_ckpt_after_load=True \
+    trainer.remove_previous_ckpt_in_save=False \
+    trainer.del_local_ckpt_after_load=False \
     trainer.test_freq=50 \
     +trainer.val_before_train=False \
     reward_fn.extraction_type=answer_conditional \
