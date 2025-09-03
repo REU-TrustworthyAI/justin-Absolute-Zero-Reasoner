@@ -9,7 +9,7 @@
 #SBATCH --output=./logs/%x_%j.out		# Output file
 #SBATCH --error=./logs/%x_%j.err		# Error file
 
-#SBATCH --gpus-per-node=h200:4
+#SBATCH --gpus-per-node=a100:4
 #SBATCH --nodes=1                # Request one node
 #SBATCH --ntasks=1               # Run a single task
 #SBATCH --cpus-per-task=16        # Request CPUs for the task
